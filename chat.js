@@ -78,11 +78,12 @@ async function initLlama() {
     // RAM'i şişirmemek için context boyutunu 1024 token ile sınırlandırdık
     globalContext = await llamaModel.createContext({
       contextSize: 1024,
-      threads: 4 // Laptoplar için ideal iş parçacığı
+      threads: 4 // İşlemciniz için ideal iş parçacığı sayısı
     });
 
-    // Oturumu tek seferlik oluşturup hafızada sabitliyoruz
-    llamaSession = new globalContext.LlamaChatSession({
+    // DOĞRU YAPI: LlamaChatSession doğrudan çağrılır ve contextSequence atanır
+    llamaSession = new LlamaChatSession({
+      contextSequence: globalContext.getSequence(),
       systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
     });
 
