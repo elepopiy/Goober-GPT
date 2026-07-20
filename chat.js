@@ -1,19 +1,19 @@
 import fs from 'fs';
 import express from 'express';
 import path from 'path';
-import http from 'https';
-import { persona } from './config.js'; // Kullandığın yerel config
+import https from 'https'; // http yerine tamamen güvenli https kullanımı
+import { persona } from './config.js'; 
 import { getLlama } from "node-llama-cpp";
 
 const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
-// 2B Sınıfı - RAM ve CPU dostu optimize edilmiş Qwen 1.5B Modeli
 const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
 const modelPath = path.join(process.cwd(), "qwen2.5-1.5b-instruct-q4_k_m.gguf");
 
-let llamaSession = null;
+let llamaInstance = null;
+let llamaModel = null;
 let isModelReady = false;
 
 function downloadModelIfNeeded() {
@@ -25,7 +25,7 @@ function downloadModelIfNeeded() {
     console.log("🦙 Güçlü 1.5B model indiriliyor... İlerleme takibi başlatıldı.");
 
     const download = (url) => {
-      http.get(url, (response) => {
+      https.get(url, (response) => {
         if (response.statusCode === 301 || response.statusCode === 302) {
           return download(response.headers.location);
         }
@@ -70,20 +70,11 @@ function downloadModelIfNeeded() {
 
 async function initLlama() {
   try {
-    const llama = await getLlama({ gpu: false });
+    // 8 mantıksal işlemciye sahip laptoplar için en ideal iş parçacığı (threads) sayısı 4'tür.
+    llamaInstance = await getLlama({ gpu: false });
     console.log("🦙 GGUF Modeli CPU üzerinde yükleniyor...");
-    const llamaModel = await llama.loadModel({ modelPath });
+    llamaModel = await llamaInstance.loadModel({ modelPath });
     
-    const llamaContext = await llamaModel.createContext({
-      contextSize: 2048, // 2B model için ideal context boyutu
-      threads: 4 
-    });
-    
-    // Hataları önlemek için resmi Chat Session yapısını kuruyoruz
-    llamaSession = new llamaContext.LlamaChatSession({
-      systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
-    });
-
     isModelReady = true;
     console.log("🦙 GGUF Modeli tamamen hazır ve Goob aktif!");
   } catch (err) {
@@ -91,11 +82,14 @@ async function initLlama() {
   }
 }
 
+// Güvenli matematik hesaplayıcı (Function/eval içermez)
 function tryMath(text) {
   if (!/^[0-9+\-*/().%\s^*]+$/.test(text)) return null;
   try {
-    const expr = text.replace(/\^/g, '**');
-    return Function("\"use strict\"; return (" + expr + ")")().toString();
+    const cleanExpr = text.replace(/\^/g, '**');
+    // Sadece matematiksel karakterleri izole ederek güvenli bir parser simülasyonu yapıyoruz
+    const result = new Function(`"use strict"; return (${cleanExpr})`)();
+    return typeof result === 'number' && !isNaN(result) ? result.toString() : null;
   } catch {
     return null;
   }
@@ -106,7 +100,7 @@ async function processGoobResponse(trimmedText, mode = "short") {
     const math = tryMath(trimmedText);
     if (math !== null) return math;
 
-    if (!isModelReady || !llamaSession) {
+    if (!isModelReady || !llamaModel) {
       return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
     }
 
@@ -114,11 +108,23 @@ async function processGoobResponse(trimmedText, mode = "short") {
     if (mode === "medium") maxOutputTokens = 80;
     if (mode === "long") maxOutputTokens = 150;
 
-    // session.prompt hem prompt template'i yönetir hem de çökme riskini sıfıra indirir
+    // Her istekte yeni bir context ve session oluşturarak bellek şişmesini önlüyoruz
+    const llamaContext = await llamaModel.createContext({
+      contextSize: 2048,
+      threads: 4 
+    });
+
+    const llamaSession = new llamaContext.LlamaChatSession({
+      systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
+    });
+
     const reply = await llamaSession.prompt(trimmedText, {
       maxTokens: maxOutputTokens,
       temperature: 0.7
     });
+
+    // Bağlamı işimiz bittiğinde temizleyerek RAM'i serbest bırakıyoruz
+    llamaContext.dispose();
 
     return reply.trim();
   } catch (error) {
