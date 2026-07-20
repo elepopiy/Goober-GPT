@@ -22,30 +22,40 @@ import { Readable } from 'stream';
 import { finished } from 'stream/promises';
 
 function downloadModelIfNeeded() {
-  return new Promise(async (resolve, reject) => {
+  return new Promise((resolve, reject) => {
     if (fs.existsSync(modelPath)) {
       console.log("🦙 Model zaten mevcut, indirme atlanıyor.");
       return resolve();
     }
-    console.log("🦙 Model internetten indiriliyor... Yönlendirmeler takip ediliyor. Bu işlem bulut sunucusunda birkaç dakika sürebilir.");
-    
-    try {
-      const response = await fetch(modelUrl);
-      if (!response.ok) {
-        reject(new Error(`Model indirilemedi, HTTP Durumu: ${response.status} ${response.statusText}`));
-        return;
-      }
+    console.log("🦙 Model internetten indiriliyor... Yönlendirmeler takip ediliyor.");
 
-      const fileStream = fs.createWriteStream(modelPath);
-      // fetch body'sini Node.js stream'ine dönüştürüp dosyaya yazıyoruz
-      await finished(Readable.fromWeb(response.body).pipe(fileStream));
-      
-      console.log("🦙 Model başarıyla indirildi ve kaydedildi!");
-      resolve();
-    } catch (err) {
-      if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath);
-      reject(err);
-    }
+    const download = (url) => {
+      http.get(url, (response) => {
+        // Eğer Hugging Face bizi başka bir linke yönlendirirse (301 veya 302)
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          return download(response.headers.location);
+        }
+
+        if (response.statusCode !== 200) {
+          reject(new Error("Model indirilemedi, HTTP Kodu: " + response.statusCode));
+          return;
+        }
+
+        const file = fs.createWriteStream(modelPath);
+        response.pipe(file);
+
+        file.on('finish', () => {
+          file.close();
+          console.log("🦙 Model başarıyla indirildi ve kaydedildi!");
+          resolve();
+        });
+      }).on('error', (err) => {
+        if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath);
+        reject(err);
+      });
+    };
+
+    download(modelUrl);
   });
 }
 
