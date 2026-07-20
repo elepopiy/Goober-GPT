@@ -9,9 +9,9 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
-// RAM ve indirme hızı dostu 0.5B model
-const modelUrl = "https://huggingface.co/lmstudio-community/Llama-3.2-0.5B-Instruct-GGUF/resolve/main/Llama-3.2-0.5B-Instruct-Q4_K_M.gguf";
-const modelPath = path.join(process.cwd(), "Llama-3.2-0.5B-Instruct-Q4_K_M.gguf");
+// Resmi Hugging Face topluluk linki - Token istemez, doğrudan indirir
+const modelUrl = "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf";
+const modelPath = path.join(process.cwd(), "Llama-3.2-1B-Instruct-Q4_K_M.gguf");
 
 let llamaSession = null;
 let isModelReady = false;
