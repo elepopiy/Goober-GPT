@@ -9,9 +9,9 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
-// Resmi Hugging Face topluluk linki - Token istemez, doğrudan indirir
-const modelUrl = "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf";
-const modelPath = path.join(process.cwd(), "Llama-3.2-1B-Instruct-Q4_K_M.gguf");
+// Tamamen halka açık, token istemeyen ve 512MB RAM dostu 0.5B modeli
+const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf";
+const modelPath = path.join(process.cwd(), "qwen2.5-0.5b-instruct-q4_k_m.gguf");
 
 let llamaSession = null;
 let isModelReady = false;
@@ -85,7 +85,7 @@ async function initLlama() {
       systemPrompt: `You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Reply in Turkish or English based on the user.`
     });
     isModelReady = true;
-    console.log("🦙 Llama-3.2-0.5B GGUF tamamen hazır!");
+    console.log("🦙 GGUF Modeli tamamen hazır!");
   } catch (err) {
     console.error("Llama başlatılırken hata oluştu:", err);
   }
