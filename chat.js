@@ -69,23 +69,21 @@ function downloadModelIfNeeded() {
   });
 }
 
+let llamaContext = null;
 async function initLlama() {
   try {
     const llama = await getLlama({ gpu: false });
     console.log("🦙 GGUF Modeli CPU üzerinde yükleniyor...");
     const llamaModel = await llama.loadModel({ modelPath });
     
-    const context = await llamaModel.createContext({
-      contextSize: 512, 
+    // Direkt context oluşturuyoruz, session kullanmayacağız
+    llamaContext = await llamaModel.createContext({
+      contextSize: 1024, 
       threads: 4 
     });
     
-    llamaSession = new LlamaChatSession({
-      contextSequence: context.getSequence(),
-      systemPrompt: `You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Reply in Turkish or English based on the user.`
-    });
     isModelReady = true;
-    console.log("🦙 GGUF Modeli tamamen hazır!");
+    console.log("🦙 GGUF Modeli tamamen hazır ve Goob aktif!");
   } catch (err) {
     console.error("Llama başlatılırken hata oluştu:", err);
   }
@@ -101,30 +99,34 @@ function tryMath(text) {
   }
 }
 
+// Eski processGoobResponse fonksiyonunun yerine bunu yapıştırın:
 async function processGoobResponse(trimmedText, mode = "short") {
   try {
     const math = tryMath(trimmedText);
     if (math !== null) return math;
 
-    if (!isModelReady || !llamaSession) return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
+    if (!isModelReady || !llamaContext) return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
 
-    let maxOutputTokens = 25; 
-    let temperature = 0.4; 
+    let maxOutputTokens = 40; 
+    if (mode === "medium") maxOutputTokens = 80;
+    if (mode === "long") maxOutputTokens = 150;
 
-    if (mode === "medium") {
-      maxOutputTokens = 60;
-      temperature = 0.6;
-    } else if (mode === "long") {
-      maxOutputTokens = 130;
-      temperature = 0.8;
-    }
+    // Qwen modelinin anlayacağı temiz chat şablonu
+    const prompt = `<|im_start|>system\nYou are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish.<|im_end|>\n<|im_start|>user\n${trimmedText}<|im_end|>\n<|im_start|>assistant\n`;
 
-    const reply = await llamaSession.prompt(trimmedText, {
-      maxOutputTokens: maxOutputTokens, 
-      temperature: temperature,
-      stopOnTokens: ["\n", "\n\n", "<END>", "<USER>", "User:", "Goob:"] 
+    const sequence = llamaContext.getSequence();
+    const responseTokens = await sequence.evaluate(llamaContext.encode(prompt), {
+      maxTokens: maxOutputTokens,
+      temperature: 0.7,
+      // Modelin saçmalamasını engelleyen kesme etiketleri
+      stopOnTokens: [
+        llamaContext.model.tokens.eos,
+        "<|im_end|>",
+        "<|endoftext|>"
+      ]
     });
 
+    const reply = llamaContext.decode(responseTokens);
     return reply.trim();
   } catch (error) {
     console.error("Inference Error:", error);
