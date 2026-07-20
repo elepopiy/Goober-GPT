@@ -1,7 +1,7 @@
 import fs from 'fs';
 import express from 'express';
 import path from 'path';
-import https from 'https'; // http yerine tamamen güvenli https kullanımı
+import https from 'https'; 
 import { persona } from './config.js'; 
 import { getLlama } from "node-llama-cpp";
 
@@ -9,11 +9,14 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
-const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const modelPath = path.join(process.cwd(), "qwen2.5-1.5b-instruct-q4_k_m.gguf");
+// Bellek dostu ve süper hızlı 0.5B (Instruct) modeline geçiş yapıldı
+const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf";
+const modelPath = path.join(process.cwd(), "qwen2.5-0.5b-instruct-q4_k_m.gguf");
 
 let llamaInstance = null;
 let llamaModel = null;
+let globalContext = null; // Sürekli silinip açılmayan, sabit tek bir context
+let llamaSession = null;  // Global chat session
 let isModelReady = false;
 
 function downloadModelIfNeeded() {
@@ -22,7 +25,7 @@ function downloadModelIfNeeded() {
       console.log("🦙 Model zaten mevcut, indirme atlanıyor.");
       return resolve();
     }
-    console.log("🦙 Güçlü 1.5B model indiriliyor... İlerleme takibi başlatıldı.");
+    console.log("🦙 Hafifletilmiş 0.5B model indiriliyor...");
 
     const download = (url) => {
       https.get(url, (response) => {
@@ -34,7 +37,7 @@ function downloadModelIfNeeded() {
           return;
         }
 
-        const totalBytes = parseInt(response.headers['content-length'], 10) || 1200 * 1024 * 1024;
+        const totalBytes = parseInt(response.headers['content-length'], 10) || 400 * 1024 * 1024;
         let downloadedBytes = 0;
         let lastLoggedPercent = -1;
 
@@ -44,10 +47,8 @@ function downloadModelIfNeeded() {
           downloadedBytes += chunk.length;
           const percent = Math.floor((downloadedBytes / totalBytes) * 100);
           
-          if (percent % 5 === 0 && percent !== lastLoggedPercent) {
-            const downloadedMB = (downloadedBytes / (1024 * 1024)).toFixed(1);
-            const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
-            console.log(`📥 İndiriliyor: %${percent} (${downloadedMB} MB / ${totalMB} MB)`);
+          if (percent % 10 === 0 && percent !== lastLoggedPercent) {
+            console.log(`📥 İndiriliyor: %${percent}`);
             lastLoggedPercent = percent;
           }
         });
@@ -70,24 +71,32 @@ function downloadModelIfNeeded() {
 
 async function initLlama() {
   try {
-    // 8 mantıksal işlemciye sahip laptoplar için en ideal iş parçacığı (threads) sayısı 4'tür.
     llamaInstance = await getLlama({ gpu: false });
     console.log("🦙 GGUF Modeli CPU üzerinde yükleniyor...");
     llamaModel = await llamaInstance.loadModel({ modelPath });
     
+    // RAM'i şişirmemek için context boyutunu 1024 token ile sınırlandırdık
+    globalContext = await llamaModel.createContext({
+      contextSize: 1024,
+      threads: 4 // Laptoplar için ideal iş parçacığı
+    });
+
+    // Oturumu tek seferlik oluşturup hafızada sabitliyoruz
+    llamaSession = new globalContext.LlamaChatSession({
+      systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
+    });
+
     isModelReady = true;
-    console.log("🦙 GGUF Modeli tamamen hazır ve Goob aktif!");
+    console.log("🦙 0.5B Modeli hazır, Goob kararlı modda aktif!");
   } catch (err) {
     console.error("Llama başlatılırken hata oluştu:", err);
   }
 }
 
-// Güvenli matematik hesaplayıcı (Function/eval içermez)
 function tryMath(text) {
   if (!/^[0-9+\-*/().%\s^*]+$/.test(text)) return null;
   try {
     const cleanExpr = text.replace(/\^/g, '**');
-    // Sadece matematiksel karakterleri izole ederek güvenli bir parser simülasyonu yapıyoruz
     const result = new Function(`"use strict"; return (${cleanExpr})`)();
     return typeof result === 'number' && !isNaN(result) ? result.toString() : null;
   } catch {
@@ -100,31 +109,20 @@ async function processGoobResponse(trimmedText, mode = "short") {
     const math = tryMath(trimmedText);
     if (math !== null) return math;
 
-    if (!isModelReady || !llamaModel) {
-      return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
+    if (!isModelReady || !llamaSession) {
+      return "Model arka planda yükleniyor, lütfen bekleyin! *wobbles*";
     }
 
-    let maxOutputTokens = 40; 
-    if (mode === "medium") maxOutputTokens = 80;
-    if (mode === "long") maxOutputTokens = 150;
+    let maxOutputTokens = 30; 
+    if (mode === "medium") maxOutputTokens = 60;
+    if (mode === "long") maxOutputTokens = 120;
 
-    // Her istekte yeni bir context ve session oluşturarak bellek şişmesini önlüyoruz
-    const llamaContext = await llamaModel.createContext({
-      contextSize: 2048,
-      threads: 4 
-    });
-
-    const llamaSession = new llamaContext.LlamaChatSession({
-      systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
-    });
-
+    // Arayüz zaten geçmişi tutuyor, modelin hafızasını tazelemek için periyodik kontrol
+    // Eğer session çok dolarsa context içinden otomatik kaydırma (sliding window) yapılır
     const reply = await llamaSession.prompt(trimmedText, {
       maxTokens: maxOutputTokens,
-      temperature: 0.7
+      temperature: 0.6
     });
-
-    // Bağlamı işimiz bittiğinde temizleyerek RAM'i serbest bırakıyoruz
-    llamaContext.dispose();
 
     return reply.trim();
   } catch (error) {
@@ -134,7 +132,7 @@ async function processGoobResponse(trimmedText, mode = "short") {
 }
 
 // ==========================================
-// 3. WEB SİTESİ ARAYÜZÜ (SIDEBAR & MOD SEÇİCİ)
+// ARAYÜZ VE API ROUTER KATMANI
 // ==========================================
 
 app.get('/', (req, res) => {
@@ -163,14 +161,13 @@ app.get('/', (req, res) => {
         .mode-btn { background: transparent; border: none; color: #a8a8b3; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
         .mode-btn.active { background: #00e676; color: #0a0a0c; }
         #chat-box { flex: 1; padding: 25px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
-        .msg { max-width: 75%; padding: 12px 16px; border-radius: 12px; line-height: 1.5; font-size: 16px; word-break: break-word; animation: fadeIn 0.2s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .msg { max-width: 75%; padding: 12px 16px; border-radius: 12px; line-height: 1.5; font-size: 16px; word-break: break-word; }
         .you { align-self: flex-end; background: #00e676; color: #0a0a0c; border-bottom-right-radius: 2px; font-weight: 500; }
         .goob { align-self: flex-start; background: #1a1a1e; color: #e1e1e6; border-bottom-left-radius: 2px; border: 1px solid #29292e; }
         #input-area { background: #1a1a1e; padding: 20px; display: flex; gap: 10px; border-top: 1px solid #29292e; }
         input { flex: 1; background: #121214; border: 1px solid #29292e; padding: 14px; border-radius: 8px; color: #fff; font-size: 16px; outline: none; }
         input:focus { border-color: #00e676; }
-        button#send-btn { background: #00e676; color: #0a0a0c; border: none; padding: 0 24px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+        button#send-btn { background: #00e676; color: #0a0a0c; border: none; padding: 0 24px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
         button#send-btn:hover { background: #00c853; }
         button:disabled, input:disabled { opacity: 0.6; cursor: not-allowed; }
       </style>
@@ -184,9 +181,9 @@ app.get('/', (req, res) => {
         <header>
           <div class="logo">GoobGPT System</div>
           <div class="mode-selector">
-            <button class="mode-btn active" id="btn-short" onclick="setMode('short')">Kısa Düşünme</button>
-            <button class="mode-btn" id="btn-medium" onclick="setMode('medium')">Orta Düşünme</button>
-            <button class="mode-btn" id="btn-long" onclick="setMode('long')">Uzun Düşünme</button>
+            <button class="mode-btn active" id="btn-short" onclick="setMode('short')">Kısa Yanıt</button>
+            <button class="mode-btn" id="btn-medium" onclick="setMode('medium')">Orta Yanıt</button>
+            <button class="mode-btn" id="btn-long" onclick="setMode('long')">Detaylı Yanıt</button>
           </div>
         </header>
         <div id="chat-box"></div>
@@ -345,17 +342,16 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ==========================================
-// 4. SUNUCU BAŞLATMA
+// BAŞLATICI V2
 // ==========================================
 
 const server = app.listen(PORT, async () => {
-  console.log(`🌍 Sunucu ${PORT} portunda aktif edildi!`);
-  
+  console.log(`🌍 Sunucu kuruldu, port: ${PORT}`);
   try {
     await downloadModelIfNeeded();
     await initLlama();
   } catch (err) {
-    console.error("Arka plan kurulum hatası:", err);
+    console.error("Başlatma sırasında kritik hata:", err);
   }
 });
 
