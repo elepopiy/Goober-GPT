@@ -2,16 +2,16 @@ import fs from 'fs';
 import express from 'express';
 import path from 'path';
 import http from 'https';
-import { persona } from './config.js';
-import { getLlama, LlamaChatSession } from "node-llama-cpp";
+import { persona } from './config.js'; // Kullandığın yerel config
+import { getLlama } from "node-llama-cpp";
 
 const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
 
-// Tamamen halka açık, token istemeyen ve 512MB RAM dostu 0.5B modeli
-const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf";
-const modelPath = path.join(process.cwd(), "qwen2.5-0.5b-instruct-q4_k_m.gguf");
+// 2B Sınıfı - RAM ve CPU dostu optimize edilmiş Qwen 1.5B Modeli
+const modelUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
+const modelPath = path.join(process.cwd(), "qwen2.5-1.5b-instruct-q4_k_m.gguf");
 
 let llamaSession = null;
 let isModelReady = false;
@@ -22,7 +22,7 @@ function downloadModelIfNeeded() {
       console.log("🦙 Model zaten mevcut, indirme atlanıyor.");
       return resolve();
     }
-    console.log("🦙 Hafif 0.5B model indiriliyor... İlerleme takibi başlatıldı.");
+    console.log("🦙 Güçlü 1.5B model indiriliyor... İlerleme takibi başlatıldı.");
 
     const download = (url) => {
       http.get(url, (response) => {
@@ -34,7 +34,7 @@ function downloadModelIfNeeded() {
           return;
         }
 
-        const totalBytes = parseInt(response.headers['content-length'], 10) || 380 * 1024 * 1024;
+        const totalBytes = parseInt(response.headers['content-length'], 10) || 1200 * 1024 * 1024;
         let downloadedBytes = 0;
         let lastLoggedPercent = -1;
 
@@ -44,7 +44,6 @@ function downloadModelIfNeeded() {
           downloadedBytes += chunk.length;
           const percent = Math.floor((downloadedBytes / totalBytes) * 100);
           
-          // Her %5 artışta bir log basarak paneli rahatlatıyoruz
           if (percent % 5 === 0 && percent !== lastLoggedPercent) {
             const downloadedMB = (downloadedBytes / (1024 * 1024)).toFixed(1);
             const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
@@ -69,19 +68,22 @@ function downloadModelIfNeeded() {
   });
 }
 
-let llamaContext = null;
 async function initLlama() {
   try {
     const llama = await getLlama({ gpu: false });
     console.log("🦙 GGUF Modeli CPU üzerinde yükleniyor...");
     const llamaModel = await llama.loadModel({ modelPath });
     
-    // Direkt context oluşturuyoruz, session kullanmayacağız
-    llamaContext = await llamaModel.createContext({
-      contextSize: 1024, 
+    const llamaContext = await llamaModel.createContext({
+      contextSize: 2048, // 2B model için ideal context boyutu
       threads: 4 
     });
     
+    // Hataları önlemek için resmi Chat Session yapısını kuruyoruz
+    llamaSession = new llamaContext.LlamaChatSession({
+      systemPrompt: "You are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish."
+    });
+
     isModelReady = true;
     console.log("🦙 GGUF Modeli tamamen hazır ve Goob aktif!");
   } catch (err) {
@@ -93,40 +95,31 @@ function tryMath(text) {
   if (!/^[0-9+\-*/().%\s^*]+$/.test(text)) return null;
   try {
     const expr = text.replace(/\^/g, '**');
-    return Function(`"use strict"; return (${expr})`)().toString();
+    return Function("\"use strict\"; return (" + expr + ")")().toString();
   } catch {
     return null;
   }
 }
 
-// Eski processGoobResponse fonksiyonunun yerine bunu yapıştırın:
 async function processGoobResponse(trimmedText, mode = "short") {
   try {
     const math = tryMath(trimmedText);
     if (math !== null) return math;
 
-    if (!isModelReady || !llamaContext) return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
+    if (!isModelReady || !llamaSession) {
+      return "Model arka planda yükleniyor, lütfen birkaç saniye sonra tekrar deneyin! *wobbles*";
+    }
 
     let maxOutputTokens = 40; 
     if (mode === "medium") maxOutputTokens = 80;
     if (mode === "long") maxOutputTokens = 150;
 
-    // Qwen modelinin anlayacağı temiz chat şablonu
-    const prompt = `<|im_start|>system\nYou are Goob from Dandy's World. Friendly, cheerful, loves hugs. Use *wobbles* or *hug* actions. Always reply in Turkish.<|im_end|>\n<|im_start|>user\n${trimmedText}<|im_end|>\n<|im_start|>assistant\n`;
-
-    const sequence = llamaContext.getSequence();
-    const responseTokens = await sequence.evaluate(llamaContext.encode(prompt), {
+    // session.prompt hem prompt template'i yönetir hem de çökme riskini sıfıra indirir
+    const reply = await llamaSession.prompt(trimmedText, {
       maxTokens: maxOutputTokens,
-      temperature: 0.7,
-      // Modelin saçmalamasını engelleyen kesme etiketleri
-      stopOnTokens: [
-        llamaContext.model.tokens.eos,
-        "<|im_end|>",
-        "<|endoftext|>"
-      ]
+      temperature: 0.7
     });
 
-    const reply = llamaContext.decode(responseTokens);
     return reply.trim();
   } catch (error) {
     console.error("Inference Error:", error);
@@ -223,7 +216,7 @@ app.get('/', (req, res) => {
           const id = 'chat_' + Date.now();
           chats[id] = {
             title: "Yeni Sohbet " + (Object.keys(chats).length + 1),
-            messages: [{ text: "${persona.greeting.replace(/'/g, "\\'")}", sender: "goob" }]
+            messages: [{ text: "${persona?.greeting?.replace(/'/g, "\\'") || "Merhaba! Ben Goob! *wobbles*"}", sender: "goob" }]
           };
           activeChatId = id;
           saveToStorage();
@@ -346,11 +339,11 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ==========================================
-// 4. SUNUCU BAŞLATMA (İLK ÖNCE PORTU AÇIYORUZ)
+// 4. SUNUCU BAŞLATMA
 // ==========================================
 
 const server = app.listen(PORT, async () => {
-  console.log(`🌍 Sunucu ${PORT} portunda aktif edildi! Render port kontrolünü geçti.`);
+  console.log(`🌍 Sunucu ${PORT} portunda aktif edildi!`);
   
   try {
     await downloadModelIfNeeded();
