@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import https from 'https'; 
 import { persona } from './config.js'; 
-import { getLlama } from "node-llama-cpp";
+import { getLlama, LlamaChatSession } from "node-llama-cpp";
 
 const PORT = process.env.PORT || 3000;
 const app = express();
