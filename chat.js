@@ -18,29 +18,34 @@ const modelPath = path.join(process.cwd(), "Llama-3.2-1B-Instruct-Q4_K_M.gguf");
 
 let llamaSession = null;
 
+import { Readable } from 'stream';
+import { finished } from 'stream/promises';
+
 function downloadModelIfNeeded() {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     if (fs.existsSync(modelPath)) {
       console.log("🦙 Model zaten mevcut, indirme atlanıyor.");
       return resolve();
     }
-    console.log("🦙 Model internetten indiriliyor... Bu işlem bulut sunucusunda birkaç dakika sürebilir.");
-    const file = fs.createWriteStream(modelPath);
-    http.get(modelUrl, function(response) {
-      if (response.statusCode !== 200) {
-        reject(new Error("Model indirilemedi, HTTP Kodu: " + response.statusCode));
+    console.log("🦙 Model internetten indiriliyor... Yönlendirmeler takip ediliyor. Bu işlem bulut sunucusunda birkaç dakika sürebilir.");
+    
+    try {
+      const response = await fetch(modelUrl);
+      if (!response.ok) {
+        reject(new Error(`Model indirilemedi, HTTP Durumu: ${response.status} ${response.statusText}`));
         return;
       }
-      response.pipe(file);
-      file.on('finish', function() {
-        file.close();
-        console.log("🦙 Model başarıyla indirildi ve kaydedildi!");
-        resolve();
-      });
-    }).on('error', function(err) {
-      fs.unlink(modelPath, () => {});
+
+      const fileStream = fs.createWriteStream(modelPath);
+      // fetch body'sini Node.js stream'ine dönüştürüp dosyaya yazıyoruz
+      await finished(Readable.fromWeb(response.body).pipe(fileStream));
+      
+      console.log("🦙 Model başarıyla indirildi ve kaydedildi!");
+      resolve();
+    } catch (err) {
+      if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath);
       reject(err);
-    });
+    }
   });
 }
 
